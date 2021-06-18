@@ -1,0 +1,436 @@
+# region TODO
+'''
+    - Add help text
+    - Stages - active commands (dict)
+
+'''
+# endregion
+# region Libraries
+import telebot
+import random
+
+# endregion
+
+# region Settings
+help_text = '''День:
+Все игроки голосуют за того кого выгнать
+Ночь:
+Каждый из классов персонажей, кроме жителя, просыпается один раз на ночь и совершает действие
+Роли:
+Мирный житель - игрок, который не обладает особыми способностями
+Мафия - игрок, который может убить одного мирного жителя каждую ночь
+Дон мафии - мафиози, который каждую ночь может узнать об одном игроке, является он шерифом или нет
+Комиссар - мирный житель, который может узнать команду одного игрока каждую ночь.
+Доктор - мирный житель, который может попытатся спасти игрока от убийства мафией'''
+defalt_ranks = ['Мафия', 'Комиссар', 'Доктор']
+lobbies = []
+min_players = 4
+# endregion
+
+# region Creating bot
+TOKEN = '1803799892:AAHr34l5WZnpJkovnE75C_kYMmDlrmOqMgc'
+mafia_bot = telebot.TeleBot(TOKEN)
+# endregion
+
+#region Classes
+
+class Game():
+    def __init__(self, players) -> None:
+        self.players = players
+        self.state = ''
+
+    def start_game(self):
+        ranks = defalt_ranks
+
+        for i in range(len(self.players) - len(ranks)):
+            ranks.append('Мирный житель')
+        random.shuffle(ranks)
+
+        for p in self.players:
+            p.set_rank(ranks.pop())
+            print(f'{p.username} - {p.rank}')
+
+    def start_day(self):
+        for p in self.players:
+            p.is_sleeping = False
+
+    def set_state(self, state):
+        self.state = state
+
+class Lobby():
+    def __init__(self) -> None:
+        self.name = None
+        self.password = None
+        self.is_public = True
+        self.players = []
+        self.game = None
+    
+    def add_player(self, id, username):
+        self.players.append(Player(id, username))
+    
+    def remove_player(self, id):
+        for p in self.players:
+            if (p.chat_id == id):
+                self.players.remove(p)
+
+    def edit_name(self, name):
+        self.name = name
+    
+    def change_password(self, password):
+        self.password = password
+        if (self.password != None):
+            self.is_public = False
+        else:
+            self.is_public = True
+
+    def start_game(self):
+        self.game = Game(self.players)
+        self.game.start_game()
+
+
+class Player():
+    def __init__(self, chat_id, username) -> None:
+        self.chat_id = chat_id
+        self.username = username
+        self.is_ready = False
+        self.rank = None
+        self.is_alive = True
+        self.is_sleeping = False
+
+    def set_rank(self, rank):
+        self.rank = rank
+
+# endregion
+
+
+@mafia_bot.message_handler(commands=['help'])
+def handle_help(msg):
+    mafia_bot.send_message(msg.chat.id, help_text)
+
+# region Lobbies 
+# Buttons: Create Lobby - Join Lobby
+def find_user_in_lobby(username) -> Lobby:
+    for lobby in lobbies:
+        for p in lobby.players:
+            if (p.username == username):
+                return lobby
+                
+    return None
+
+def set_lobby_name_and_password(msg, lobby):
+    try:
+        name, password = msg.text.split(' - ')
+        if (password == '*'):
+            password = None
+
+        for l in lobbies:
+            if (l.name == name):
+                mafia_bot.send_message(msg.chat.id, 'Данное имя занято /create_lobby')
+                return 
+
+        lobby.edit_name(name)
+        lobby.change_password(password)
+
+        mafia_bot.send_message(msg.chat.id, 'Вы успешно создали лобби')
+    except:
+        lobbies.remove(lobby)
+        mafia_bot.send_message(msg.chat.id, 'Неверно введены данные')
+
+
+@mafia_bot.message_handler(commands=['create_lobby'])
+def create_lobby(msg):
+    chat_id = msg.chat.id
+    chat_username = msg.from_user.username
+
+    if (find_user_in_lobby(chat_username)):
+        mafia_bot.send_message(chat_id, 'Ты уже в лобби')
+        return
+
+    lobby = Lobby()
+    lobby.add_player(msg.chat.id, chat_username)
+    lobbies.append(lobby)
+    
+    bot_msg = mafia_bot.send_message(chat_id, 'Введите название и пароль для лобби\nНАЗВАНИЕ - ПАРОЛЬ ("*" - без):')
+    mafia_bot.register_next_step_handler(bot_msg, set_lobby_name_and_password, lobby)
+
+# region Change_lobby_name
+def change_lobby_name(msg, lobby):
+    lobby.edit_name(msg.text)
+    mafia_bot.send_message(msg.chat.id, 'Вы успешно сменили название лобби')
+
+@mafia_bot.message_handler(commands=['change_lobby_name'])
+def handle_change_lobby_name(msg):
+    chat_username = msg.from_user.username
+    lobby = find_user_in_lobby(chat_username)
+    if (lobby):
+        bot_msg = mafia_bot.send_message(msg.chat.id, 'Введите название лобби:')
+        mafia_bot.register_next_step_handler(bot_msg, change_lobby_name, lobby)
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Вы не в лобби')
+
+# endregion
+
+# region Change_lobby_password
+def change_lobby_password(msg, lobby):
+    if (msg.text == '*'):
+        lobby.change_password(None)
+    else:
+        lobby.change_password(msg.text)
+    mafia_bot.send_message(msg.chat.id, 'Вы успешно сменили пароль')
+
+@mafia_bot.message_handler(commands=['change_lobby_password'])
+def handle_change_lobby_password(msg):
+    chat_username = msg.from_user.username
+    lobby = find_user_in_lobby(chat_username)
+
+    if (lobby):
+        bot_msg = mafia_bot.send_message(msg.chat.id, 'Введите пароль для лобби:')
+        mafia_bot.register_next_step_handler(bot_msg, change_lobby_password, lobby)
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Вы не находитесь в лобби')
+# endregion
+
+@mafia_bot.message_handler(commands=['get_ready'])
+def handle_get_ready(msg):
+    chat_username = msg.from_user.username
+    lobby = find_user_in_lobby(chat_username)
+
+    if (lobby):
+        for p in lobby.players:
+            if (p.username == chat_username):
+                p.is_ready = True
+                mafia_bot.send_message(msg.chat.id, 'Вы готовы')
+
+# region Joining_lobbies
+def check_lobby_password(msg, lobby, current_lobby):
+    if (msg.text == lobby.password):
+        lobby.add_player(msg.chat.id, msg.from_user.username)
+        if (current_lobby):
+            current_lobby.remove_player(msg.chat.id)
+        mafia_bot.send_message(msg.chat.id, 'Вы успешно присоеднились к лобби')
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Пароль не верный')
+
+def join_lobby(msg):
+    found_lobby = False
+    current_lobby = find_user_in_lobby(msg.from_user.username)
+    
+    for lobby in lobbies:
+        if (msg.text == lobby.name):
+            found_lobby = True
+
+            if (current_lobby == msg.text):
+                mafia_bot.send_message(msg.chat.id, 'Вы уже в этом лобби')
+                return
+
+            if (lobby.password == None):
+                lobby.add_player(msg.chat.id, msg.from_user.username)
+                if (current_lobby != None):
+                    current_lobby.remove_player(msg.chat.id)
+                mafia_bot.send_message(msg.chat.id, 'Вы успешно присоеднились к лобби')
+
+                for p in lobby.players:
+                    if (p.chat_id != msg.chat.id):
+                        mafia_bot.send_message(p.chat_id, f'{msg.from_user.username} присоеднился/ась')
+            else:
+                bot_msg = mafia_bot.send_message(msg.chat.id, 'Введите пароль:')
+                mafia_bot.register_next_step_handler(bot_msg, check_lobby_password, lobby, current_lobby)
+    
+    if (not found_lobby): 
+        mafia_bot.send_message(msg.chat.id, 'Такого лобби не существует')
+
+@mafia_bot.message_handler(commands=['show_public_lobbies'])
+def show_public_lobbies(msg):
+    text = ''
+    for lobby in lobbies:
+        if (lobby.is_public):
+            text += f'• {lobby.name} - {len(lobby.players)} игроков\n'
+
+    if (text != ''):
+        mafia_bot.send_message(msg.chat.id, text)
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Ни одного публичного лобби не найдено')
+
+@mafia_bot.message_handler(commands=['join_private_lobby'])
+def handle_joining_lobby(msg):
+    bot_msg = mafia_bot.send_message(msg.chat.id, 'Введите название лобби:')
+    mafia_bot.register_next_step_handler(bot_msg, join_lobby)
+
+@mafia_bot.message_handler(commands=['leave_lobby'])
+def handle_leaving_lobby(msg):
+    chat_id = msg.chat.id
+    lobby = find_user_in_lobby(msg.from_user.username)
+
+    if (lobby):
+        lobby.remove_player(chat_id)
+        mafia_bot.send_message(chat_id, 'Вы вышли из лобби')
+    else:
+        mafia_bot.send_message(chat_id, 'Вы не находитесь в лобби')
+
+@mafia_bot.message_handler(commands=['lobby_info'])
+def get_lobby_info(msg):
+    lobby = find_user_in_lobby(msg.from_user.username)
+
+    if (lobby):
+        usernames = '\n•\t'.join([p.username for p in lobby.players])
+        lobby_info = f'Имя: {lobby.name}\nПароль: {lobby.password}\nКол-во игроков: {len(lobby.players)}\nИгроки:\n•\t{usernames}'
+
+        mafia_bot.send_message(msg.chat.id, lobby_info)
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Вы не находитесь в лобби')
+
+@mafia_bot.message_handler(commands=['start_game'])
+def start_game(msg):
+    chat_username = msg.from_user.username
+    lobby = find_user_in_lobby(chat_username)
+
+    if (lobby):
+        if (len(lobby.players) < min_players):
+            mafia_bot.send_message(msg.chat.id, f'Недостаточно игроков в лобби, минимальное кол-во - {min_players}')
+            return 
+
+        for p in lobby.players:
+            if (p.is_ready == False):
+                mafia_bot.send_message(msg.chat.id, 'Не все игроки готовы')
+                return 
+            
+            mafia_bot.send_message(p.chat_id, 'Начало игры:')
+            
+        lobby.start_game()
+        for p in lobby.game.players:
+            mafia_bot.send_message(p.chat_id, f'Вы - {p.rank}')
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Вы не в лобби')
+# endregion
+
+# endregion
+
+@mafia_bot.message_handler(commands=['start'])
+def handle_start(msg):
+    mafia_bot.send_message(msg.chat.id, 'Привет, я бот для игры в мафию\nСоздай своё лобби /create_lobby и начни игру :)')
+
+# region Tests
+@mafia_bot.message_handler(commands=['test_lobbies'])
+def test_lobbies(msg):
+    print(f'Len lobbies: {len(lobbies)}')
+    print('Lobbies:')
+    for lobby in lobbies:
+        print(f'\tName: {lobby.name}')
+        print(f"\tPassword: {lobby.password}")
+        print(f"\tCount of players: {len(lobby.players)}")
+        print("\tPlayers:")
+        for p in lobby.players:
+            print(f'\t\t {p.username}')
+        print('='*20)
+
+@mafia_bot.message_handler(commands=['test_msg'])
+def test_msg(msg):
+    print('msg:')
+    print(msg)
+# endregion
+
+@mafia_bot.message_handler(content_types=['text', 'photo', 'sticker', 'video', 'voice'])
+def handle_message(msg):
+    username = msg.from_user.username
+    lobby = find_user_in_lobby(username)
+
+    if (lobby):
+        if not lobby.game:
+            for p in lobby.players:
+                # if(p.chat.id != msg.chat.id):
+                if(p.chat_id != msg.chat.id):
+                    print(msg)
+                    print('='*15)
+                    if (msg.content_type == 'text'):
+                        mafia_bot.send_message(p.chat_id, f'{username}: ' + msg.text)
+                    elif (msg.content_type == 'photo'):
+                        mafia_bot.send_photo(p.chat_id, msg.photo[-1].file_id, caption=f'{username}:')
+                    elif (msg.content_type == 'sticker'):
+                        bot_msg = mafia_bot.send_sticker(p.chat_id, msg.sticker.file_id)
+                        mafia_bot.reply_to(bot_msg, f'{username}:')
+                        # Другие варианты
+                        # mafia_bot.send_sticker(p.chat_id, msg.sticker.file_id, reply_markup=username)
+                        # mafia_bot.forward_message(p.chat_id, msg.chat.id, msg.id)
+                    elif (msg.content_type == 'video'):
+                        mafia_bot.send_video(p.chat_id, msg.video.file_id, caption=f'{username}:')
+                    elif (msg.content_type == 'voice'):
+                        mafia_bot.send_voice(p.chat_id, msg.voice.file_id, caption=f'{username}:')
+                    else:
+                        mafia_bot.send_message(msg.chat.id, 'Bot: Извините, данный формат сообщений не поддерживается')
+        else:
+            # Сделать отдельные чаты для всех классов игры
+            pass
+    else:
+        mafia_bot.send_message(msg.chat.id, 'Извините, я вас не понял, чат доступен только в лобби. По всем вопросам @oleg_sfn')
+
+mafia_bot.polling()
+
+
+
+# -------------------Comments-------------------
+'''
+Lobby():
+    - string name
+    - string password
+    - bool is_public
+    - players = Players[]
+    - Game game = None
+
+    def add_player():
+        self.players.append()
+
+    def start_game():
+        check if enough players to start
+        choose roles and counts (modes or difficulties)
+
+
+Game():
+    - roles_dict = {role : count}
+    - roles_list = []
+    - players = []
+    - mafias = Mafia[]
+    - commissioners = Commissioner[]
+    - doctors = Doctors[]
+    - innocents = Innocents[]
+
+    def create_roles_list():
+        # Check if roles <= len(players)
+        # Add innocents if roles < len(players)
+        if (len(roles_dict.items()) < len(players)):
+
+
+        for role in roles_dict.items():
+            for i in range(roles_dict.get(role)):
+                self.roles_list.append(role)
+        random.shuffle(self.roles_list)
+
+    def set_roles():
+        for p in self.players:
+            role = roles_list.pop()
+
+    def start_day():
+        set isSleeping = False to all 
+
+    def start_night():
+
+Player():
+    - string username
+    - bool is_alive = True
+    - bool is_sleeping = False
+
+Mafia(Player):
+
+
+Commissioner(Player):
+
+Doctor(Player):
+
+Innocent(Player):
+
+
+
+
+
+
+'''
+# ----------------------------------------------
